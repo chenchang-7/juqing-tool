@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>剧情演绎类脚本生成器</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<style>
+  :root {
+    --bg: #0d0d12;
+    --panel: #16161f;
+    --panel-2: #1e1e2a;
+    --border: #2a2a3a;
+    --text: #e8e8f0;
+    --muted: #8a8a9a;
+    --accent: #ff3d68;
+    --accent-2: #7b5cff;
+    --ok: #3ddc84;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, #241a2e 0%, var(--bg) 55%);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.6;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 28px 20px 80px; }
+  header { text-align: center; margin-bottom: 24px; }
+  h1 {
+    font-size: 28px; margin: 0 0 6px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    letter-spacing: 2px;
+  }
+  .sub { color: var(--muted); font-size: 14px; }
+  .layout { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 18px; margin-bottom: 18px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 12px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .card h2 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
+  label:first-of-type { margin-top: 0; }
+  input, textarea, select {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 9px; padding: 10px 12px; font-size: 14px;
+    font-family: inherit; outline: none; transition: border .15s;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent-2); }
+  textarea { resize: vertical; min-height: 100px; }
+  textarea.big { min-height: 160px; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .keyline { display: flex; gap: 8px; align-items: center; }
+  .keyline input { flex: 1; }
+  .checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-top: 10px; cursor: pointer; }
+  .checkbox input { width: auto; }
+  button {
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    color: white; border: none; border-radius: 10px; padding: 13px 20px;
+    font-size: 15px; font-weight: 600; cursor: pointer; width: 100%;
+    margin-top: 16px; transition: transform .1s, opacity .15s; letter-spacing: 1px;
+  }
+  button:hover { transform: translateY(-1px); }
+  button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
+  button.ghost { background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); width: auto; padding: 7px 14px; margin: 0; font-size: 12px; font-weight: 500; letter-spacing: 0; }
+  .toggle-btn { background: none; border: none; color: var(--accent-2); cursor: pointer; font-size: 12px; padding: 4px; width: auto; margin: 0; }
+
+  /* 上传区 */
+  .drop {
+    border: 2px dashed var(--border); border-radius: 12px; padding: 26px 16px;
+    text-align: center; cursor: pointer; transition: border-color .15s, background .15s;
+    color: var(--muted);
+  }
+  .drop:hover, .drop.over { border-color: var(--accent-2); background: rgba(123,92,255,.06); }
+  .drop b { color: var(--accent-2); }
+  .drop small { display: block; margin-top: 6px; font-size: 12px; }
+  .files { list-style: none; padding: 0; margin: 12px 0 0; }
+  .files li {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 12px; margin-bottom: 6px; font-size: 13px;
+  }
+  .files .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .files .fmeta { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+  .files .rm { color: var(--accent); cursor: pointer; flex-shrink: 0; background: none; border: none; width: auto; margin: 0; padding: 2px 6px; font-size: 16px; }
+  .files .err { color: var(--accent); }
+
+  #output {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 22px 24px; margin-top: 18px; min-height: 120px;
+  }
+  #output:empty::before { content: "生成结果会显示在这里……"; color: var(--muted); }
+  #output h1 { font-size: 20px; -webkit-text-fill-color: initial; background: none; color: var(--accent); margin: 22px 0 10px; letter-spacing: 0; }
+  #output h3 { font-size: 15px; color: var(--accent-2); margin: 16px 0 6px; }
+  #output ul, #output ol { margin: 6px 0; padding-left: 22px; }
+  #output li { margin: 3px 0; }
+  #output p { margin: 6px 0; }
+  #output hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
+  #output blockquote { border-left: 3px solid var(--accent); margin: 8px 0; padding: 2px 14px; color: #d0d0e0; background: var(--panel-2); border-radius: 0 8px 8px 0; }
+  .outbar { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+  .status { font-size: 13px; color: var(--muted); min-height: 20px; }
+  .status.err { color: var(--accent); }
+  .status.ok { color: var(--ok); }
+  .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  details.help { margin-top: 14px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 0 14px; }
+  details.help summary { cursor: pointer; padding: 12px 0; font-size: 13px; color: var(--accent-2); }
+  details.help div { font-size: 13px; color: var(--muted); padding-bottom: 14px; }
+  details.help a { color: var(--accent-2); }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>剧情演绎类脚本生成器</h1>
+  </header>
+
+  <!-- Claude 接口设置 -->
+  <div class="card">
+    <h2><span class="dot"></span>Claude 接口设置</h2>
+    <div class="layout">
+      <div>
+        <label>密钥 / Token(官方 sk-ant- 或代理 AUTH_TOKEN 均可)</label>
+        <div class="keyline">
+          <input id="apiKey" type="password" placeholder="粘贴你的密钥或代理 Token" autocomplete="off">
+          <button class="toggle-btn" id="toggleKey" type="button">显示</button>
+        </div>
+        <label class="checkbox"><input type="checkbox" id="rememberKey"> 记住密钥(仅存于本机浏览器,不上传)</label>
+      </div>
+      <div>
+        <label>模型</label>
+        <select id="model">
+          <option value="claude-opus-4-6">Claude Opus 4.6(质量最高)</option>
+          <option value="claude-sonnet-4-6" selected>Claude Sonnet 4.6(快·推荐)</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5(最快最省)</option>
+        </select>
+      </div>
+    </div>
+    <details class="help">
+      <summary>怎么用?没连上怎么办?</summary>
+      <div>
+        <b>使用前必须先在自己电脑上启动「本地中转」</b>(双击运行 <code>local-relay</code> 启动文件,看到「本地中转已启动」即可,窗口别关)。<br><br>
+        密钥 / Token 就是你 Claude Code 里用的那个(<code>ANTHROPIC_AUTH_TOKEN</code>,通常在 <code>~/.claude/settings.json</code> 里)。<br><br>
+        若点生成后报「Failed to fetch」,基本是本地中转没启动或已关闭,重新启动即可。<br><br>
+        密钥只存在你自己的浏览器里,不上传到本页所在的服务器。
+      </div>
+    </details>
+  </div>
+
+  <!-- 素材 -->
+  <div class="card">
+    <h2><span class="dot"></span>素材</h2>
+    <div id="drop" class="drop">
+      <b>点击上传</b> 或把文件拖到这里<br>
+      <small>支持 .txt / .md / .docx / .pdf,可多选多次添加</small>
+    </div>
+    <input id="fileInput" type="file" multiple accept=".txt,.md,.docx,.pdf" style="display:none">
+    <ul id="fileList" class="files"></ul>
+
+    <label>或直接粘贴正文(可与上传文件叠加)</label>
+    <textarea id="source" class="big" placeholder="粘贴小说章节、互动剧情、人物设定,或一句场景钩子……"></textarea>
+  </div>
+
+  <!-- 需求 -->
+  <div class="card">
+    <h2><span class="dot"></span>需求</h2>
+    <div class="row">
+      <div>
+        <label>生成几版</label>
+        <select id="versions">
+          <option value="1">1 版</option>
+          <option value="2">2 版</option>
+          <option value="3" selected>3 版</option>
+          <option value="4">4 版</option>
+          <option value="5">5 版</option>
+        </select>
+      </div>
+      <div>
+        <label>核心爽点(可选)</label>
+        <input id="flavor" placeholder="修罗场 / 危险贴身 / 吃醋撞见 / 病娇占有">
+      </div>
+    </div>
+
+    <label>具体需求说明(可选)</label>
+    <textarea id="requirement" placeholder="随便写,比如:&#10;· 主打某几个人物或某几条关系线(一版可涉及多条线)&#10;· 想突出的冲突 / 反转 / 名场面&#10;· 目标平台、时长、风格偏好&#10;· 必须包含或必须回避的内容"></textarea>
+    <div class="hint">留空则由 AI 依据素材自行发挥。</div>
+  </div>
+
+  <button id="genBtn">开 始 生 成</button>
+
+  <div class="outbar">
+    <div class="status" id="status"></div>
+    <button class="ghost" id="copyBtn" style="display:none">复制结果</button>
+  </div>
+
+  <div id="output"></div>
+</div>
+
+<script>
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+}
+
+const SYSTEM_PROMPT = `你是「剧情演绎类脚本生成器」——把小说/互动剧情改编成中文短视频信息流风格的互动短剧高能片段脚本。
+
+## 爆款逻辑
+
+1. 开头必须是冲击力画面:大尺度、羞辱、压迫、危险贴近——先把人抓住。
+2. 紧跟描述语,必须同时点出刺激身份 + 画面感动作(如"杀人魔正在抚摸你的大腿":身份刺激 + 动作带入)。
+3. 立刻给两个短选项,简洁有力,情绪和剧情都到了观众才会想点(如"踹飞他"搞笑 + "继续装昏迷"勾子)。不要为了有选项而硬凑。
+4. 点选后马上给反应剧情和台词,让观众得到选择的爽感。
+5. 台词体现角色反差(如"信吗?我这双手杀过无数人和鬼,还是第一次……"——危险中的暧昧)。
+6. 结尾再次设置选项,用暗示性台词引入遐想(如"放了我,你做什么都可以……")。
+7. 场景之间不需要强逻辑连续,爽点写完就切,像一个个高能片段拼接。不要把某个场景的前因后果都写明白。
+8. 每一句台词或描述都必须有目的:要么推动剧情,要么留勾子。没有目的就删。
+9. 只有开头和结尾必须设置选项,中间要不要再插入视情况而定。
+
+改编优先级:爽点 > 点击欲 > 人设底层逻辑 > 原剧情还原。
+
+如果原剧情不够爆,主动改编:
+- 普通对话 → 高压对峙
+- 平淡相处 → 暧昧试探
+- 单线剧情 → 被撞见/吃醋/误会升级
+- 靠后的真相 → 提前到第一屏
+- 弱选项 → 立刻改变关系的动作选项
+- 可补新场景,但不违背人物关系底层逻辑
+
+一版脚本可以涉及多条关系线/多个人物,不必局限于单一感情线;若使用者指定了人物或关系,按其要求组织。
+
+## 输出格式(每一版都用这个 markdown 结构)
+
+# 版本X｜卖点:一句话说清这版主打什么
+
+### 1. 开头画面
+[一句高冲击动作画面]
+
+### 2. 描述语
+「[身份 + 冲突 + 动作,一句话]」
+
+### 3. 【你的选择】
+1. [短动作选项]
+2. [短动作选项]
+
+### 4. 点击【选项名】后
+[5-8句:动作反馈 + 短对白 + 角色反差台词 + 关系/危险升级]
+
+### 5. 描述语
+「[承接新悬念/关系升级/危险亲密]」
+
+### 6. 【你的选择】
+1. [推进/反击/试探]
+2. [躲开/嘴硬/挑衅]
+
+多版之间用 --- 分隔。
+
+## 描述语规则
+1. 用「……」。2. 只写一句。3. 必须同时包含:人物身份/关系 + 动作。4. 陌生观众一眼看懂。5. 少用"他/她",优先写身份标签。
+
+## 选项规则
+简洁有力,直接改变局面。优先:身体动作、关系试探、反制挑衅、危险选择。避免:纯情绪、无差异、太长太文艺。
+
+## 点击后剧情规则
+5-8句,只写画面:动作、神态、台词。像分镜一样,写观众能直接看到、听到的东西。
+1. 承接选择,写"你做了什么"这个具体动作。
+2. 对方的具体身体反应或神态(脸红、后退、瞪眼、攥拳、喉结滚动……)。
+3. 短对白推进拉扯,台词少而狠。
+4. 停在关系变质/危险升级/暧昧压迫前的那一个画面上。
+禁止写虚的旁白/心理总结/氛围点评(如"空气仿佛凝固了""气氛变得暧昧起来")。要拆成具体动作、表情或台词让观众自己看出来。可以用(内心)写角色心声,但要是具体一句话,不是作者评论。台词少而狠,短句密集,不解释来龙去脉。
+
+## 多版写法
+每版要有差异化的核心爽点/切入角度,不要多版同一套路。
+
+## 禁止项
+- 不输出分析/关系图/表格 - 不写成小说梗概 - 不只给裸选项 - 结尾不写总结/安利/收尾 - 不解释写作原理
+
+## 默认风格
+中文短视频信息流风格。强冲突、强画面、强点击欲。陌生观众秒懂。
+
+直接输出成品片段,不要任何开场白或结尾解释。`;
+
+const $ = id => document.getElementById(id);
+// 接口地址固定走本机中转(每人在自己电脑上跑 local-relay,端口 8787)
+const API_URL = "http://localhost:8787/v1/messages";
+
+// 已解析的文件:{name, size, text}
+let loadedFiles = [];
+
+// 恢复保存的 密钥 / 模型
+if (localStorage.getItem("xjx_key")) {
+  $("apiKey").value = localStorage.getItem("xjx_key");
+  $("rememberKey").checked = true;
+}
+if (localStorage.getItem("xjx_model")) $("model").value = localStorage.getItem("xjx_model");
+
+$("toggleKey").onclick = () => {
+  const f = $("apiKey");
+  if (f.type === "password") { f.type = "text"; $("toggleKey").textContent = "隐藏"; }
+  else { f.type = "password"; $("toggleKey").textContent = "显示"; }
+};
+$("model").onchange = () => localStorage.setItem("xjx_model", $("model").value);
+
+// 组装认证头:sk-ant- 用官方 x-api-key,其余(代理 token)用 Bearer
+function buildAuthHeaders(key) {
+  const useBearer = !key.startsWith("sk-ant-");
+  const h = {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true"
+  };
+  if (useBearer) h["authorization"] = "Bearer " + key;
+  else h["x-api-key"] = key;
+  return h;
+}
+
+function setStatus(msg, cls) {
+  const s = $("status");
+  s.className = "status" + (cls ? " " + cls : "");
+  s.innerHTML = msg;
+}
+
+function fmtSize(n) {
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + " KB";
+  return (n / 1024 / 1024).toFixed(1) + " MB";
+}
+
+// ---------- 文件解析 ----------
+async function readTxt(file) {
+  return await file.text();
+}
+async function readDocx(file) {
+  const buf = await file.arrayBuffer();
+  const res = await mammoth.extractRawText({ arrayBuffer: buf });
+  return res.value;
+}
+async function readPdf(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  let out = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    out += content.items.map(it => it.str).join(" ") + "\n";
+  }
+  return out;
+}
+
+async function parseFile(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".txt") || name.endsWith(".md")) return readTxt(file);
+  if (name.endsWith(".docx")) return readDocx(file);
+  if (name.endsWith(".pdf")) return readPdf(file);
+  if (name.endsWith(".doc")) throw new Error("旧版 .doc 不支持,请另存为 .docx");
+  throw new Error("不支持的格式");
+}
+
+function renderFileList() {
+  const ul = $("fileList");
+  ul.innerHTML = "";
+  loadedFiles.forEach((f, idx) => {
+    const li = document.createElement("li");
+    const left = document.createElement("span");
+    left.className = "fname";
+    left.textContent = f.name;
+    const meta = document.createElement("span");
+    meta.className = "fmeta";
+    if (f.error) { meta.classList.add("err"); meta.textContent = f.error; }
+    else meta.textContent = f.text.length.toLocaleString() + " 字 · " + fmtSize(f.size);
+    const rm = document.createElement("button");
+    rm.className = "rm"; rm.textContent = "×"; rm.title = "移除";
+    rm.onclick = () => { loadedFiles.splice(idx, 1); renderFileList(); };
+    const right = document.createElement("span");
+    right.style.display = "flex"; right.style.gap = "10px"; right.style.alignItems = "center";
+    right.appendChild(meta); right.appendChild(rm);
+    li.appendChild(left); li.appendChild(right);
+    ul.appendChild(li);
+  });
+}
+
+async function handleFiles(fileList) {
+  for (const file of fileList) {
+    const entry = { name: file.name, size: file.size, text: "", error: "解析中…" };
+    loadedFiles.push(entry);
+    renderFileList();
+    try {
+      entry.text = (await parseFile(file)).trim();
+      entry.error = entry.text ? "" : "空文件或无法提取文字";
+    } catch (e) {
+      entry.error = e.message || "解析失败";
+    }
+    renderFileList();
+  }
+}
+
+$("drop").onclick = () => $("fileInput").click();
+$("fileInput").onchange = e => { handleFiles(e.target.files); e.target.value = ""; };
+["dragover", "dragenter"].forEach(ev => $("drop").addEventListener(ev, e => { e.preventDefault(); $("drop").classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => $("drop").addEventListener(ev, e => { e.preventDefault(); $("drop").classList.remove("over"); }));
+$("drop").addEventListener("drop", e => { if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+
+// ---------- 组装 prompt ----------
+function collectSource() {
+  const parts = [];
+  loadedFiles.forEach(f => {
+    if (f.text) parts.push("【文件:" + f.name + "】\n" + f.text);
+  });
+  const pasted = $("source").value.trim();
+  if (pasted) parts.push("【粘贴正文】\n" + pasted);
+  return parts.join("\n\n");
+}
+
+function buildUserPrompt(source) {
+  const versions = $("versions").value;
+  const flavor = $("flavor").value.trim();
+  const requirement = $("requirement").value.trim();
+
+  let p = "请根据以下素材,生成 " + versions + " 版剧情演绎类互动短剧脚本片段。\n\n";
+  if (flavor) p += "核心爽点方向:" + flavor + "\n";
+  if (requirement) p += "具体需求说明:\n" + requirement + "\n";
+  p += "\n=== 素材正文 ===\n" + source;
+  return p;
+}
+
+// ---------- 生成 ----------
+$("genBtn").onclick = async () => {
+  const key = $("apiKey").value.trim();
+  const source = collectSource();
+
+  if (!key) { setStatus("请先填写密钥 / Token", "err"); return; }
+  if (!source) { setStatus("请上传文件或粘贴素材正文", "err"); return; }
+
+  if ($("rememberKey").checked) localStorage.setItem("xjx_key", key);
+  else localStorage.removeItem("xjx_key");
+
+  const btn = $("genBtn");
+  btn.disabled = true;
+  $("copyBtn").style.display = "none";
+  $("output").innerHTML = "";
+  setStatus('<span class="spinner"></span>正在生成……', "");
+
+  let acc = "";
+  try {
+    const resp = await fetch(API_URL, {
+      method: "POST",
+      headers: buildAuthHeaders(key),
+      body: JSON.stringify({
+        model: $("model").value,
+        max_tokens: 8192,
+        stream: true,
+        system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+        messages: [{ role: "user", content: buildUserPrompt(source) }]
+      })
+    });
+
+    if (!resp.ok) {
+      const bodyText = await resp.text();
+      let detail = bodyText;
+      try { const j = JSON.parse(bodyText); detail = j.error?.message || JSON.stringify(j); }
+      catch { /* 非 JSON,保留原文 */ }
+      throw new Error("HTTP " + resp.status + ": " + detail);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (!data || data === "[DONE]") continue;
+        try {
+          const ev = JSON.parse(data);
+          if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+            acc += ev.delta.text;
+            $("output").innerHTML = marked.parse(acc);
+          } else if (ev.type === "error") {
+            throw new Error(ev.error?.message || "stream error");
+          }
+        } catch (e) { /* 忽略半包 JSON */ }
+      }
+    }
+
+    setStatus("生成完成 ✓", "ok");
+    $("copyBtn").style.display = "inline-block";
+    $("copyBtn").dataset.raw = acc;
+  } catch (err) {
+    let msg = err.message;
+    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+      msg = "连不上本地中转。请先在自己电脑上启动「本地中转」(双击 local-relay 启动文件),窗口保持开着,再重试。";
+    }
+    setStatus("出错:" + msg, "err");
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$("copyBtn").onclick = () => {
+  navigator.clipboard.writeText($("copyBtn").dataset.raw || "").then(() => {
+    $("copyBtn").textContent = "已复制 ✓";
+    setTimeout(() => $("copyBtn").textContent = "复制结果", 1500);
+  });
+};
+</script>
+</body>
+</html>
