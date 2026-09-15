@@ -129,12 +129,11 @@
     <h2><span class="dot"></span>Claude 接口设置</h2>
     <div class="layout">
       <div>
-        <label>密钥 / Token(官方 sk-ant- 或代理 AUTH_TOKEN 均可)</label>
-        <div class="keyline">
-          <input id="apiKey" type="password" placeholder="粘贴你的密钥或代理 Token" autocomplete="off">
-          <button class="toggle-btn" id="toggleKey" type="button">显示</button>
-        </div>
-        <label class="checkbox"><input type="checkbox" id="rememberKey"> 记住密钥(仅存于本机浏览器,不上传)</label>
+        <label>使用模式</label>
+        <select id="mode">
+          <option value="official" selected>官方 API</option>
+          <option value="proxy">代理模式</option>
+        </select>
       </div>
       <div>
         <label>模型</label>
@@ -145,13 +144,26 @@
         </select>
       </div>
     </div>
-    <details class="help">
-      <summary>怎么用?没连上怎么办?</summary>
+    <div class="layout">
       <div>
-        <b>使用前必须先在自己电脑上启动「本地中转」</b>(双击运行 <code>local-relay</code> 启动文件,看到「本地中转已启动」即可,窗口别关)。<br><br>
-        密钥 / Token 就是你 Claude Code 里用的那个(<code>ANTHROPIC_AUTH_TOKEN</code>,通常在 <code>~/.claude/settings.json</code> 里)。<br><br>
-        若点生成后报「Failed to fetch」,基本是本地中转没启动或已关闭,重新启动即可。<br><br>
-        密钥只存在你自己的浏览器里,不上传到本页所在的服务器。
+        <label id="keyLabel">API 密钥(sk-ant- 开头)</label>
+        <div class="keyline">
+          <input id="apiKey" type="password" placeholder="粘贴你的 API 密钥" autocomplete="off">
+          <button class="toggle-btn" id="toggleKey" type="button">显示</button>
+        </div>
+        <label class="checkbox"><input type="checkbox" id="rememberKey"> 记住密钥(仅存于本机浏览器,不上传)</label>
+      </div>
+      <div></div>
+    </div>
+
+    <details class="help" id="helpOfficial">
+      <summary>没有 API 密钥?怎么获取?(官方 API 模式)</summary>
+      <div>
+        本模式<b>无需安装任何东西</b>,粘上密钥即可用:<br>
+        1. 打开 <a href="https://console.anthropic.com/settings/keys" target="_blank">console.anthropic.com</a> 登录 / 注册<br>
+        2. 进入 <b>API Keys</b> → <b>Create Key</b><br>
+        3. 复制以 <code>sk-ant-</code> 开头的字符串,粘贴到上方 → 上传素材 → 生成<br><br>
+        费用按你自己的 Anthropic 账号计费。密钥只存在你自己的浏览器里,直接请求 Anthropic 官方接口,不经过任何第三方服务器。
       </div>
     </details>
   </div>
@@ -210,7 +222,7 @@ if (window.pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
 }
 
-const SYSTEM_PROMPT = `你是「剧情演绎类脚本生成器」——把小说/互动剧情改编成中文短视频信息流风格的互动短剧高能片段脚本。
+const SYSTEM_PROMPT = `你是「选剧选」互动短剧分支片段生成器——独立生成互动短剧/互动小说信息流片段,固定使用"描述语 + 选项 + 点击后剧情 + 描述语 + 选项"的结构。本工作独立完成,不混用任何其他格式。
 
 ## 爆款逻辑
 
@@ -234,11 +246,11 @@ const SYSTEM_PROMPT = `你是「剧情演绎类脚本生成器」——把小说
 - 弱选项 → 立刻改变关系的动作选项
 - 可补新场景,但不违背人物关系底层逻辑
 
-一版脚本可以涉及多条关系线/多个人物,不必局限于单一感情线;若使用者指定了人物或关系,按其要求组织。
+一版脚本可以涉及多条关系线/多个人物;若使用者指定了攻略对象或关系,按其要求组织,每版围绕一个核心冲突。
 
-## 输出格式(每一版都用这个 markdown 结构)
+## 输出格式(每一版都严格用这个 markdown 骨架)
 
-# 版本X｜卖点:一句话说清这版主打什么
+# 版本X｜对象/关系线:一句话卖点
 
 ### 1. 开头画面
 [一句高冲击动作画面]
@@ -263,7 +275,11 @@ const SYSTEM_PROMPT = `你是「剧情演绎类脚本生成器」——把小说
 多版之间用 --- 分隔。
 
 ## 描述语规则
-1. 用「……」。2. 只写一句。3. 必须同时包含:人物身份/关系 + 动作。4. 陌生观众一眼看懂。5. 少用"他/她",优先写身份标签。
+1. 用「……」包起来。
+2. 只写一句。
+3. 必须同时包含:人物身份/关系 + 动作。
+4. 陌生观众一眼看懂。
+5. 少用"他/她",优先写身份标签。
 
 ## 选项规则
 简洁有力,直接改变局面。优先:身体动作、关系试探、反制挑衅、危险选择。避免:纯情绪、无差异、太长太文艺。
@@ -274,32 +290,70 @@ const SYSTEM_PROMPT = `你是「剧情演绎类脚本生成器」——把小说
 2. 对方的具体身体反应或神态(脸红、后退、瞪眼、攥拳、喉结滚动……)。
 3. 短对白推进拉扯,台词少而狠。
 4. 停在关系变质/危险升级/暧昧压迫前的那一个画面上。
-禁止写虚的旁白/心理总结/氛围点评(如"空气仿佛凝固了""气氛变得暧昧起来")。要拆成具体动作、表情或台词让观众自己看出来。可以用(内心)写角色心声,但要是具体一句话,不是作者评论。台词少而狠,短句密集,不解释来龙去脉。
+禁止写虚的旁白/心理总结/氛围点评(如"两句话温柔,底下却在暗暗较劲""空气仿佛凝固了""气氛变得暧昧起来")。要拆成具体动作、表情或台词让观众自己看出来。可以用(内心)写角色心声,但也要是具体的一句话,不是作者的评论。台词少而狠,短句密集,不解释来龙去脉。
 
-## 多版写法
-每版要有差异化的核心爽点/切入角度,不要多版同一套路。
+## 多攻略对象写法
+每版围绕一个对象,体现该对象独有爽点,不要多版同一套路。
 
 ## 禁止项
-- 不输出分析/关系图/表格 - 不写成小说梗概 - 不只给裸选项 - 结尾不写总结/安利/收尾 - 不解释写作原理
+- 不混用其他 skill 格式
+- 绝不输出编号台词剧本(如 pb:… / 系统:宿主… / V1-1 你:… / V1-2 温言:… 这类逐行编号对话)。一旦出现 pb: 系统: 宿主 V数字-数字 这种写法就是彻底错误。
+- 不输出分析/关系图/表格
+- 不写成小说梗概
+- 不只给裸选项
+- 结尾不写总结/安利/收尾
+- 不解释写作原理
 
 ## 默认风格
 中文短视频信息流风格。强冲突、强画面、强点击欲。陌生观众秒懂。
 
+---
+
+## 爽点节奏参考(以下是真实爆款拍摄脚本素材,只用来体会节奏和台词力度,严禁照它的"场景一/画面描述/角色台词"排版输出。你的成品一律用上面的输出骨架)
+
+范例一(砂仁魔线):
+剧情字幕:你睁开眼睛,发现杀人魔正在抚摸你的大腿 → 选项:踹飞他 / 继续装昏迷
+你挣扎着用腿踢开他。杀人魔:"醒得比预计的快。" 你:"变态!"
+镜头拉近,他一手抚上你的脖颈,低头对视。杀人魔:"信吗?我这双手杀过无数人和鬼,还是第一次碰女孩子。" 你:"关我屁事。"
+他掐住你的脖子,你被迫仰头。杀人魔:"别再激怒我。" → 选项:用力讨好 / 挣扎反抗 → 你:"放了我,你做什么都可以……"
+
+范例二(季暮舟修罗场):
+季暮舟一鞭子抽在你背上。季暮舟(低沉带笑):"喜欢吗姐姐?" → 选项:喜欢你妹 / 喜欢
+被绳捆着的男二咆哮。林初:"不要!你杀了我!"
+季暮舟从身后贴住你,占有欲拉满。季暮舟:"那就让姐夫好好看看,我们现在在干什么。" 林初:"我杀了你!"
+你主动挽住他领口仰头:"听起来很刺激,我很喜欢。晚上好冷,你抱着我一起睡好不好?" 季暮舟:"你知道你在做什么吗?勾引一个杀人魔。"
+他走向铁门猛然回眸:"不想死就跟上来。" → 选项:远远跟上去 / 紧紧跟着,抓住他衣角
+
 直接输出成品片段,不要任何开场白或结尾解释。`;
 
 const $ = id => document.getElementById(id);
-// 接口地址固定走本机中转(每人在自己电脑上跑 local-relay,端口 8787)
-const API_URL = "http://localhost:8787/v1/messages";
+// 两种模式的接口地址
+const OFFICIAL_URL = "https://api.anthropic.com/v1/messages"; // 官方,浏览器可直连
+const PROXY_URL = "http://localhost:8787/v1/messages";        // 代理,走本机中转
 
 // 已解析的文件:{name, size, text}
 let loadedFiles = [];
 
-// 恢复保存的 密钥 / 模型
+// 恢复保存的 模式 / 密钥 / 模型
+if (localStorage.getItem("xjx_mode")) $("mode").value = localStorage.getItem("xjx_mode");
 if (localStorage.getItem("xjx_key")) {
   $("apiKey").value = localStorage.getItem("xjx_key");
   $("rememberKey").checked = true;
 }
 if (localStorage.getItem("xjx_model")) $("model").value = localStorage.getItem("xjx_model");
+
+// 根据模式更新界面文案
+function applyMode() {
+  const proxy = $("mode").value === "proxy";
+  $("keyLabel").textContent = proxy ? "密钥 / Token(ANTHROPIC_AUTH_TOKEN)" : "API 密钥(sk-ant- 开头)";
+  $("apiKey").placeholder = proxy ? "粘贴你的代理 Token" : "粘贴你的 API 密钥";
+  $("helpOfficial").style.display = proxy ? "none" : "";
+  // 代理模式强制走干净的 Opus 通道,模型选择无效,禁用下拉框避免误导
+  $("model").disabled = proxy;
+  $("model").title = proxy ? "代理模式固定使用 Opus 4.6(该代理下唯一可用的干净通道)" : "";
+}
+applyMode();
+$("mode").onchange = () => { localStorage.setItem("xjx_mode", $("mode").value); applyMode(); };
 
 $("toggleKey").onclick = () => {
   const f = $("apiKey");
@@ -307,6 +361,20 @@ $("toggleKey").onclick = () => {
   else { f.type = "password"; $("toggleKey").textContent = "显示"; }
 };
 $("model").onchange = () => localStorage.setItem("xjx_model", $("model").value);
+
+// 当前模式的接口地址
+function apiUrl() {
+  return $("mode").value === "proxy" ? PROXY_URL : OFFICIAL_URL;
+}
+
+// 解析实际发送的 model:
+// 代理模式下,该代理(Claude Code 网关)只对精确 ID "global.anthropic.claude-opus-4-6-v1"
+// 干净透传;其它 ID 会被代理注入 Claude Code 自带系统提示,冲垮本工具的规则。
+// 所以代理模式一律强制走这个干净的 Opus 通道。官方模式用下拉框选的裸 ID。
+function resolveModel() {
+  if ($("mode").value === "proxy") return "global.anthropic.claude-opus-4-6-v1";
+  return $("model").value;
+}
 
 // 组装认证头:sk-ant- 用官方 x-api-key,其余(代理 token)用 Bearer
 function buildAuthHeaders(key) {
@@ -423,7 +491,10 @@ function buildUserPrompt(source) {
   const flavor = $("flavor").value.trim();
   const requirement = $("requirement").value.trim();
 
-  let p = "请根据以下素材,生成 " + versions + " 版剧情演绎类互动短剧脚本片段。\n\n";
+  let p = "请根据以下素材,生成 " + versions + " 版选剧选互动短剧脚本片段。\n";
+  p += "每一版都必须写满 6 段:1开头画面 / 2描述语 / 3【你的选择】/ 4点击【选项名】后 / 5描述语 / 6【你的选择】,一段都不能少。\n";
+  p += "描述语必须是「」包起来的一句话、不超过25字,严禁写成一大段系统旁白或身世交代(如'系统的声音在脑海中炸响''好感度-100')。\n";
+  p += "严禁输出 pb:/系统:/宿主/V1-1 你: 这种逐行编号台词剧本。\n\n";
   if (flavor) p += "核心爽点方向:" + flavor + "\n";
   if (requirement) p += "具体需求说明:\n" + requirement + "\n";
   p += "\n=== 素材正文 ===\n" + source;
@@ -449,11 +520,11 @@ $("genBtn").onclick = async () => {
 
   let acc = "";
   try {
-    const resp = await fetch(API_URL, {
+    const resp = await fetch(apiUrl(), {
       method: "POST",
       headers: buildAuthHeaders(key),
       body: JSON.stringify({
-        model: $("model").value,
+        model: resolveModel(),
         max_tokens: 8192,
         stream: true,
         system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
@@ -501,7 +572,9 @@ $("genBtn").onclick = async () => {
   } catch (err) {
     let msg = err.message;
     if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-      msg = "连不上本地中转。请先在自己电脑上启动「本地中转」(双击 local-relay 启动文件),窗口保持开着,再重试。";
+      msg = $("mode").value === "proxy"
+        ? "连不上本地中转。请先在自己电脑上启动「本地中转」(双击 local-relay 启动文件),窗口保持开着,再重试。"
+        : "连不上 Claude 官方接口。请检查网络;若你用的是代理 Token(非 sk-ant-),请把「使用模式」切到「代理模式」。";
     }
     setStatus("出错:" + msg, "err");
   } finally {
