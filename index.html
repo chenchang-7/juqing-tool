@@ -116,6 +116,57 @@
   details.help div { font-size: 13px; color: var(--muted); padding-bottom: 14px; }
   details.help a { color: var(--accent-2); }
   code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+
+  /* 选中修改:悬浮按钮 */
+  .sel-menu {
+    position: fixed; z-index: 50;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    color: #fff; font-size: 13px; font-weight: 600;
+    padding: 7px 13px; border-radius: 8px; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0,0,0,.4); user-select: none;
+  }
+  .sel-menu:hover { transform: translateY(-1px); }
+
+  /* 弹窗通用 */
+  .modal-mask {
+    position: fixed; inset: 0; z-index: 60;
+    background: rgba(0,0,0,.6); backdrop-filter: blur(3px);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 20px; width: 100%; max-width: 480px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  .modal h3 { margin: 0 0 12px; font-size: 16px; color: var(--text); }
+  .modal label { margin-top: 12px; }
+  .sel-preview {
+    background: var(--panel-2); border: 1px solid var(--border); border-left: 3px solid var(--accent-2);
+    border-radius: 8px; padding: 10px 12px; font-size: 13px; color: #d0d0e0;
+    max-height: 140px; overflow: auto; white-space: pre-wrap; line-height: 1.5;
+  }
+  .modal-btns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+  .modal-btns button { margin-top: 0; width: auto; }
+
+  /* 对比视图 */
+  .compare-modal { max-width: 1000px; }
+  .compare-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .compare-status { font-size: 13px; color: var(--muted); }
+  .compare-status.ok { color: var(--ok); }
+  .compare-status.err { color: var(--accent); }
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+  @media (max-width: 720px) { .compare { grid-template-columns: 1fr; } }
+  .compare-col { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--bg); }
+  .compare-tag { font-size: 12px; color: var(--muted); padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+  .compare-body { padding: 14px 16px; max-height: 60vh; overflow: auto; font-size: 14px; }
+  .compare-body h1 { font-size: 18px; -webkit-text-fill-color: initial; background: none; color: var(--accent); margin: 16px 0 8px; letter-spacing: 0; }
+  .compare-body h1:first-child { margin-top: 0; }
+  .compare-body h3 { font-size: 14px; color: var(--accent-2); margin: 12px 0 5px; }
+  .compare-body ul, .compare-body ol { margin: 5px 0; padding-left: 20px; }
+  .compare-body li { margin: 3px 0; }
+  .compare-body p { margin: 5px 0; }
+  .compare-body hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+  .compare-body blockquote { border-left: 3px solid var(--accent); margin: 6px 0; padding: 2px 12px; color: #d0d0e0; background: var(--panel-2); border-radius: 0 8px 8px 0; }
 </style>
 </head>
 <body>
@@ -501,6 +552,70 @@ function buildUserPrompt(source) {
   return p;
 }
 
+// ---------- 通用:流式调用 Claude ----------
+// messages: 传给接口的对话数组;onDelta: 每收到一段文本回调(累计文本)。返回完整文本。
+async function streamClaude(key, messages, onDelta) {
+  const resp = await fetch(apiUrl(), {
+    method: "POST",
+    headers: buildAuthHeaders(key),
+    body: JSON.stringify({
+      model: resolveModel(),
+      max_tokens: 8192,
+      stream: true,
+      system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      messages
+    })
+  });
+
+  if (!resp.ok) {
+    const bodyText = await resp.text();
+    let detail = bodyText;
+    try { const j = JSON.parse(bodyText); detail = j.error?.message || JSON.stringify(j); }
+    catch { /* 非 JSON,保留原文 */ }
+    throw new Error("HTTP " + resp.status + ": " + detail);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let acc = "";
+  let streamErr = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let ev;
+      try { ev = JSON.parse(data); }
+      catch (e) { continue; /* 忽略半包 JSON */ }
+      if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
+        acc += ev.delta.text;
+        if (onDelta) onDelta(acc);
+      } else if (ev.type === "error") {
+        streamErr = new Error(ev.error?.message || "stream error");
+      }
+    }
+  }
+  if (streamErr) throw streamErr;
+  return acc;
+}
+
+// 把网络类错误翻译成中文提示
+function friendlyError(msg) {
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    return $("mode").value === "proxy"
+      ? "连不上本地中转。请先在自己电脑上启动「本地中转」(双击 local-relay 启动文件),窗口保持开着,再重试。"
+      : "连不上 Claude 官方接口。请检查网络;若你用的是代理 Token(非 sk-ant-),请把「使用模式」切到「代理模式」。";
+  }
+  return msg;
+}
+
 // ---------- 生成 ----------
 $("genBtn").onclick = async () => {
   const key = $("apiKey").value.trim();
@@ -518,65 +633,17 @@ $("genBtn").onclick = async () => {
   $("output").innerHTML = "";
   setStatus('<span class="spinner"></span>正在生成……', "");
 
-  let acc = "";
   try {
-    const resp = await fetch(apiUrl(), {
-      method: "POST",
-      headers: buildAuthHeaders(key),
-      body: JSON.stringify({
-        model: resolveModel(),
-        max_tokens: 8192,
-        stream: true,
-        system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-        messages: [{ role: "user", content: buildUserPrompt(source) }]
-      })
-    });
-
-    if (!resp.ok) {
-      const bodyText = await resp.text();
-      let detail = bodyText;
-      try { const j = JSON.parse(bodyText); detail = j.error?.message || JSON.stringify(j); }
-      catch { /* 非 JSON,保留原文 */ }
-      throw new Error("HTTP " + resp.status + ": " + detail);
-    }
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (!data || data === "[DONE]") continue;
-        try {
-          const ev = JSON.parse(data);
-          if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {
-            acc += ev.delta.text;
-            $("output").innerHTML = marked.parse(acc);
-          } else if (ev.type === "error") {
-            throw new Error(ev.error?.message || "stream error");
-          }
-        } catch (e) { /* 忽略半包 JSON */ }
-      }
-    }
-
-    setStatus("生成完成 ✓", "ok");
+    const acc = await streamClaude(
+      key,
+      [{ role: "user", content: buildUserPrompt(source) }],
+      text => { $("output").innerHTML = marked.parse(text); }
+    );
+    setStatus("生成完成 ✓ · 选中任意片段右键可继续修改", "ok");
     $("copyBtn").style.display = "inline-block";
     $("copyBtn").dataset.raw = acc;
   } catch (err) {
-    let msg = err.message;
-    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-      msg = $("mode").value === "proxy"
-        ? "连不上本地中转。请先在自己电脑上启动「本地中转」(双击 local-relay 启动文件),窗口保持开着,再重试。"
-        : "连不上 Claude 官方接口。请检查网络;若你用的是代理 Token(非 sk-ant-),请把「使用模式」切到「代理模式」。";
-    }
-    setStatus("出错:" + msg, "err");
+    setStatus("出错:" + friendlyError(err.message), "err");
   } finally {
     btn.disabled = false;
   }
@@ -588,6 +655,199 @@ $("copyBtn").onclick = () => {
     setTimeout(() => $("copyBtn").textContent = "复制结果", 1500);
   });
 };
+
+// ================= 选中片段 → 修改 =================
+let selMenuEl = null;      // 悬浮「修改选中」按钮
+let currentSelText = "";   // 当前选中的文字
+
+function removeSelMenu() {
+  if (selMenuEl) { selMenuEl.remove(); selMenuEl = null; }
+}
+
+// 取得当前选区文字(且必须落在 output 内)
+function getOutputSelection() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return "";
+  const text = sel.toString().trim();
+  if (!text) return "";
+  // 选区起点必须在 output 内
+  const anchor = sel.anchorNode;
+  if (!anchor || !$("output").contains(anchor)) return "";
+  return text;
+}
+
+// 松开鼠标 / 键盘选择后,若在 output 内选中文字,弹出「修改选中」按钮
+document.addEventListener("mouseup", e => {
+  if (selMenuEl && selMenuEl.contains(e.target)) return; // 点的是按钮本身
+  setTimeout(() => {
+    const text = getOutputSelection();
+    removeSelMenu();
+    if (!text) return;
+    currentSelText = text;
+    const menu = document.createElement("div");
+    menu.className = "sel-menu";
+    menu.textContent = "✎ 修改选中";
+    menu.style.left = Math.min(e.clientX, window.innerWidth - 120) + "px";
+    menu.style.top = (e.clientY + 12) + "px";
+    menu.onclick = () => { removeSelMenu(); openModifyModal(currentSelText); };
+    document.body.appendChild(menu);
+    selMenuEl = menu;
+  }, 10);
+});
+
+// 右键选中区域也走同一入口(拦截默认菜单)
+$("output").addEventListener("contextmenu", e => {
+  const text = getOutputSelection();
+  if (!text) return; // 没选中就用系统默认菜单
+  e.preventDefault();
+  removeSelMenu();
+  currentSelText = text;
+  openModifyModal(currentSelText);
+});
+
+// 点空白处收起悬浮按钮
+document.addEventListener("mousedown", e => {
+  if (selMenuEl && !selMenuEl.contains(e.target)) removeSelMenu();
+});
+
+// ---- 输入修改指令的弹窗 ----
+function openModifyModal(selText) {
+  if (!($("copyBtn").dataset.raw || "").trim()) return; // 还没有完整脚本
+  const mask = document.createElement("div");
+  mask.className = "modal-mask";
+  mask.innerHTML = `
+    <div class="modal">
+      <h3>修改选中片段</h3>
+      <label>选中内容(AI 会结合整版脚本上下文来改)</label>
+      <div class="sel-preview" id="selPreview"></div>
+      <label>修改指令</label>
+      <textarea id="modifyInstr" placeholder="例如:把这段改得更暧昧危险 / 换个更狠的选项 / 这里衔接生硬帮我顺一下"></textarea>
+      <div class="modal-btns">
+        <button class="ghost" id="modifyCancel">取消</button>
+        <button id="modifyRun" style="width:auto">开始修改</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  $("selPreview").textContent = selText;
+  $("modifyInstr").focus();
+
+  const close = () => mask.remove();
+  $("modifyCancel").onclick = close;
+  mask.addEventListener("mousedown", e => { if (e.target === mask) close(); });
+  $("modifyRun").onclick = () => {
+    const instr = $("modifyInstr").value.trim();
+    if (!instr) { $("modifyInstr").focus(); return; }
+    close();
+    runModify(selText, instr);
+  };
+}
+
+// ---- 把整份脚本按 --- 拆成"版本块",并定位选中片段落在哪一块 ----
+// 返回 parts 数组:偶数下标是版本块,奇数下标是分隔线(原样保留,便于拼回)
+function splitVersions(raw) {
+  return raw.split(/(\n[ \t]*---[ \t]*\n)/);
+}
+function normalizeForMatch(s) {
+  return (s || "").replace(/[\s#*`>\-—。,、!?:;「」『』【】()()"'…·]/g, "");
+}
+// 找选中文字所在的版本块下标;找不到返回 -1
+function locateBlockIndex(parts, selText) {
+  const nSel = normalizeForMatch(selText);
+  const probe = nSel.slice(0, Math.min(nSel.length, 12));
+  if (!probe) return -1;
+  for (let i = 0; i < parts.length; i += 2) {
+    if (normalizeForMatch(parts[i]).includes(probe)) return i;
+  }
+  return -1;
+}
+// 取版本块的标题(第一行 # …),用于对比窗提示
+function versionTitle(block) {
+  const m = (block || "").match(/^#\s*(.+)$/m);
+  return m ? m[1].trim() : "";
+}
+
+// ---- 组装修改 prompt(只针对选中的那一版) ----
+function buildModifyPrompt(versionBlock, selText, instr, isSingle) {
+  return "下面是一版选剧选互动短剧脚本" + (isSingle ? "" : "(整份脚本里的其中一版)") + "。\n\n" +
+    "=== 这一版脚本 ===\n" + versionBlock + "\n\n" +
+    "=== 我选中要修改的片段 ===\n" + selText + "\n\n" +
+    "=== 修改指令 ===\n" + instr + "\n\n" +
+    "请只修改这一版,以选中片段为重点;如果改完后与本版内部上下文衔接不顺,可以一并调整本版内的衔接段落。" +
+    "不要改动、不要引用、不要输出其它版本。保持这一版的版本标题不变(除非指令明确要求改标题)。" +
+    "严格保持选剧选骨架(版本标题 / 开头画面 / 描述语 / 【你的选择】 / 点击【选项名】后 …)。\n" +
+    "只输出修改后的【这一版脚本】,不要写分隔线 ---,不要任何解释或开场白。";
+}
+
+// ---- 执行修改 + 左右对比(只作用于选中的那一版) ----
+async function runModify(selText, instr) {
+  const key = $("apiKey").value.trim();
+  const fullRaw = $("copyBtn").dataset.raw || "";
+  if (!key) { setStatus("请先填写密钥 / Token", "err"); return; }
+
+  // 定位选中片段所在的版本块
+  const parts = splitVersions(fullRaw);
+  let blockIdx = locateBlockIndex(parts, selText);
+  const isSingle = parts.length <= 1;
+  if (blockIdx < 0) blockIdx = 0; // 兜底:定位不到就当整份处理
+  const targetBlock = parts[blockIdx];
+  const title = versionTitle(targetBlock);
+
+  const mask = document.createElement("div");
+  mask.className = "modal-mask";
+  mask.innerHTML = `
+    <div class="modal compare-modal">
+      <div class="compare-head">
+        <h3 style="margin:0">${isSingle ? "原脚本 · 修改后 对比" : "只改这一版 · 对比"}</h3>
+        <span class="compare-status" id="cmpStatus"><span class="spinner"></span>正在生成修改版……</span>
+      </div>
+      ${isSingle ? "" : `<div class="hint" style="margin-top:6px">本次仅修改:<b>${title || "选中的那一版"}</b>,其它版本保持不变</div>`}
+      <div class="compare">
+        <div class="compare-col">
+          <div class="compare-tag">原${isSingle ? "脚本" : "版本"}</div>
+          <div class="compare-body" id="cmpLeft"></div>
+        </div>
+        <div class="compare-col">
+          <div class="compare-tag">修改后</div>
+          <div class="compare-body" id="cmpRight"></div>
+        </div>
+      </div>
+      <div class="modal-btns">
+        <button class="ghost" id="cmpDiscard">放弃</button>
+        <button id="cmpAccept" style="width:auto" disabled>采纳修改</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  $("cmpLeft").innerHTML = marked.parse(targetBlock);
+
+  const close = () => mask.remove();
+  $("cmpDiscard").onclick = close;
+
+  let revised = "";
+  try {
+    revised = await streamClaude(
+      key,
+      [{ role: "user", content: buildModifyPrompt(targetBlock, selText, instr, isSingle) }],
+      text => { $("cmpRight").innerHTML = marked.parse(text); }
+    );
+    $("cmpStatus").textContent = "修改完成 ✓ 满意就采纳,否则放弃";
+    $("cmpStatus").className = "compare-status ok";
+    const accept = $("cmpAccept");
+    accept.disabled = false;
+    accept.onclick = () => {
+      // 把修改后的版本块拼回整份脚本,其它版本原样不动
+      parts[blockIdx] = revised.trim();
+      const newFull = parts.join("");
+      $("output").innerHTML = marked.parse(newFull);
+      $("copyBtn").dataset.raw = newFull;
+      $("copyBtn").style.display = "inline-block";
+      setStatus("已采纳修改 ✓ 可继续选中片段再改", "ok");
+      close();
+    };
+  } catch (err) {
+    $("cmpStatus").textContent = "出错:" + friendlyError(err.message);
+    $("cmpStatus").className = "compare-status err";
+  }
+}
 </script>
 </body>
 </html>
